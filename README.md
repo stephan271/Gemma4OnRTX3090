@@ -1,11 +1,22 @@
-# Gemma4OnRTX3090
+# Gemma 4 26B on RTX 3090: Optimized Inference & Vision Guide
 
-#turboquant #opencode #hermes
+![License](https://img.shields.io/github/license/stephan271/Gemma4OnRTX3090)
+![Maintained](https://img.shields.io/badge/Maintained%3F-yes-green.svg)
+![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)
 
 ## Introduction
-Just wanted to share my setup utilizing a 3090 GPU. Hope it may be useful for others :-)
 
-This repository guides you through setting up Gemma4 MoE model including vision capability on a linux PC with a single attached RTX 3090 to run a highly optimized local LLM inference environment. By utilizing a dedicated `llama.cpp` fork with TurboQuant support ([AmesianX/TurboQuant](https://github.com/AmesianX/TurboQuant.git)), we can offload a 26B parameter model (Gemma 4) to a single 24GB VRAM GPU while supporting large context windows of up to the maximum of 256k tokens for single slot setups and 150k tokens for 2 slot setups, while achieving impressive token generation rates.
+**Run the Gemma 4 26B MoE model with full vision capabilities on a single 24GB VRAM RTX 3090.**
+
+This repository provides a comprehensive guide and optimized configuration for building a high-performance local LLM environment. By leveraging a dedicated `llama.cpp` fork with **TurboQuant** support ([AmesianX/TurboQuant](https://github.com/AmesianX/TurboQuant.git)), you can achieve:
+
+- **Ultra-Long Context**: Up to **256k tokens** (RotorQuant) for deep document analysis.
+- **High Throughput**: Generation speeds of ~100 tokens/sec on consumer hardware.
+- **VRAM Efficiency**: Fully offload 26B MoE weights to a single 24GB GPU.
+- **Multimodal Support**: Integrated vision processing for UI automation and image analysis.
+- **Agent Orchestration**: Native support for [OpenCode](https://github.com/anomalyco/opencode) and [Hermes](https://github.com/NousResearch/hermes-agent).
+
+Just wanted to share my setup utilizing a 3090 GPU. Hope it may be useful for others :-)
 
 ## Expected Performance
 
@@ -101,7 +112,7 @@ You can seamlessly use the built-in web endpoint for inference on port 8000 (acc
 
 ---
 
-## Section 2: Connecting the Model to OpenCode
+## Section 2: Connecting the Model to [OpenCode](https://github.com/anomalyco/opencode)
 
 The OpenCode agent can interact seamlessly with your new llama-server APIs using the built-in provider configurations.
 
@@ -137,7 +148,7 @@ To connect OpenCode on your development client (e.g. laptop):
 
 ---
 
-## Section 3: Connecting Hermes to OpenCode (Adjusted Setup)
+## Section 3: Connecting [Hermes](https://github.com/NousResearch/hermes-agent) to [OpenCode](https://github.com/anomalyco/opencode) (Adjusted Setup)
 
 To allow the Hermes framework to orchestrate OpenCode tasks in parallel on the same server, changes are necessary to both the Server and Hermes configurations. Please make sure that you are running a hardened Hermes setup to avoid any surprises !
 

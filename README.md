@@ -8,15 +8,17 @@
 
 **Run the Gemma 4 26B MoE model with full vision capabilities on a single 24GB VRAM RTX 3090.**
 
-This repository provides a comprehensive guide and optimized configuration for building a high-performance local LLM environment. By leveraging a dedicated `llama.cpp` fork with **TurboQuant** support ([AmesianX/TurboQuant](https://github.com/AmesianX/TurboQuant.git)), you can achieve:
+Just wanted to share my setup utilizing a 3090 GPU. Hope it may be useful for others :-)
 
-- **Ultra-Long Context**: Up to **256k tokens** (RotorQuant) for deep document analysis.
-- **High Throughput**: Generation speeds of ~100 tokens/sec on consumer hardware.
+This repository provides a short guide and optimized configuration for building a high-performance local LLM environment. By leveraging a dedicated `llama.cpp` fork with **TurboQuant** support ([AmesianX/TurboQuant](https://github.com/AmesianX/TurboQuant.git)), you can achieve:
+
+- **Long Context**: Up to **256k tokens** (TurboQuant) for deep document analysis.
+- **High Throughput**: Generation speeds of ~100 tokens/sec on the 3090 hardware.
 - **VRAM Efficiency**: Fully offload 26B MoE weights to a single 24GB GPU.
 - **Multimodal Support**: Integrated vision processing for UI automation and image analysis.
 - **Agent Orchestration**: Native support for [OpenCode](https://github.com/anomalyco/opencode) and [Hermes](https://github.com/NousResearch/hermes-agent).
 
-Just wanted to share my setup utilizing a 3090 GPU. Hope it may be useful for others :-)
+
 
 ## Expected Performance
 

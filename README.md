@@ -25,9 +25,9 @@ This repository provides a short guide and optimized configuration for building 
 | Metric | Value |
 | :--- | :--- |
 | **Model** | Gemma-4-26B-A4B-it-UD-Q5_K_M + mmproj-F16.gguf|
-| **Generation Speed** | ~ 100 tokens/sec |
+| **Generation Speed** | ~ 50 tokens/sec |
 | **Max Context Limit one slot** | 262144 |
-| **Max Context Limit two slots** | ca. 2*150000 |
+| **Max Context Limit two slots** | ca. 2*262144 |
 
 
 ---
@@ -85,7 +85,7 @@ hf download unsloth/gemma-4-26B-A4B-it-GGUF mmproj-F16.gguf --local-dir /data/mo
 
 Note that in the following it is assumed that the GPU is not used for other purposes other than running the Gemma models (e.g. a headless server machine). If this is not the case for you you may have to lower the context size values.
 
-Keep mmproj files on RAM (no offloading to GPU) and enable turboquant cache types. Allow to read the model remotely on port 8000
+Keep mmproj files on RAM (no offloading to GPU) and enable turboquant cache types (tbqp3/tbq3). Make sure that Flash-Attention buffer spikes do not hurt you (ubatch-size), but is still big enough to cope with images (>273 tokens). Allow to read the model remotely on port 8000
 
 ```bash
 cd TurboQuant
@@ -102,6 +102,7 @@ cd TurboQuant
   --cache-type-v tbq3 \
   --mmproj /data/models/gguf/mmproj-F16.gguf
   --no-mmproj-offload
+  --ubatch-size 288
 
 ```
 ---
@@ -169,11 +170,7 @@ model:
   default: gemma-4-26B-A4B-it-UD-Q5_K_M.gguf
   provider: custom
   base_url: http://<server-ip>:8000/v1
-providers:
-  llama-server:
-    base_url: http://<server-ip>:8000/v1
-    api_key: dummy
-
+providers: {}
 ```
 
 ### 3. Using the opencode skill to delegate coding tasks
@@ -181,7 +178,21 @@ Use the command /opencode to activate the opencode skill for hermes. You may hav
 
 ![Hermes Screenshot](hermes-screenshot.png) 
 
-### 4. Git Worktrees for Parallel Execution
+### 4. Add brave search mcp server
+
+Add to .hermes/config.yaml:
+```yaml
+mcp_servers:
+    brave-search:
+      command: npx
+      args:
+        - -y
+        - "@brave/brave-search-mcp-server"
+      env:
+        BRAVE_API_KEY: "your BRAVE API key"
+```
+
+### 5. Git Worktrees for Parallel Execution
 Hermes prefers executing concurrent AI activities utilizing **Git Worktrees**. When assigning multiple agents, instead of traditional branch checking, instruct (or allow) Hermes to perform a checkout onto new branch folders out-of-line:
 ```bash
 git worktree add ../feature-ui feature/new-ui

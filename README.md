@@ -233,12 +233,29 @@ fits, at roughly two-thirds the decode speed.
 | Non-thinking | `temp 0.7, top_p 0.80, top_k 20, presence_penalty 1.5` |
 | **Tool-heavy agentic coding** | `temp ~0.6` - do not carry the 1.0 thinking default into agent loops |
 
-The largest single lever is reasoning effort, which outweighs every server flag combined
-(`xhigh` default / `medium` / `low` / `off`):
+The largest single lever is reasoning effort, which outweighs every server flag combined.
+The chat template accepts exactly three values - **`xhigh` (template default), `medium`, `low`**.
+`high` is silently aliased to `xhigh`; anything else (including `none`/`off`) raises a Jinja
+exception and the request fails with HTTP 500:
 
 ```bash
 --chat-template-kwargs '{"reasoning_effort":"medium"}'
 ```
+
+To disable thinking entirely there is a **separate** switch - `reasoning_effort` has no "off" value:
+
+```bash
+--chat-template-kwargs '{"enable_thinking":false}'
+```
+
+Both are also settable per request, which is how you vary effort prompt-to-prompt without a restart.
+`llama-server` accepts `reasoning_effort` as a top-level field and maps it into the template, so
+`{"reasoning_effort":"low"}` and `{"chat_template_kwargs":{"reasoning_effort":"low"}}` are equivalent.
+
+> **Set `--min-p 0.0` explicitly.** The GGUF carries Qwen's `temp 1.0 / top_p 0.95 / top_k 20`, so
+> those apply even with no flags - but `min_p` is not in that metadata and falls back to llama.cpp's
+> own default of `0.05`, which stacks on top of top-k/top-p and over-constrains the distribution.
+> Check what you actually got with `curl -s localhost:8000/props`.
 
 > **Tool-calling caveat.** The official Qwen3.8 chat template has a known tool-calling bug - failed calls,
 > empty-think poisoning, and agentic stalls. If harness runs stall, try a community template
@@ -275,6 +292,8 @@ ExecStart=/garagedata/build/llama.cpp/build/bin/llama-server \
   -md /garagedata/models/gguf/mtp-Qwen3.8-27B-Q4_0.gguf \
   --spec-draft-n-max 2 \
   --ubatch-size 512 --cache-ram 512 \
+  --min-p 0.0 \
+  --chat-template-kwargs '{"reasoning_effort":"medium"}' \
   --mmproj /garagedata/models/gguf/mmproj-Qwen3.8-27B-F16.gguf \
   --no-mmproj-offload
 

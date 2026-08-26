@@ -194,7 +194,7 @@ unsloth start claude \
 **Not recommended here:** these replace the llama.cpp stack, losing the MTP draft head, the
 vision projector, and the tuned KV quantization this repo is built around.
 
-### Claude Code works as a client
+### Claude Code works as a client - but only with the patched chat template
 
 Build `b10577` exposes a genuine Anthropic-format `/v1/messages` (verified - returns
 `type: "message"`, `content: [{type: "thinking", ...}]`, `stop_reason`):
@@ -203,11 +203,26 @@ Build `b10577` exposes a genuine Anthropic-format `/v1/messages` (verified - ret
 ANTHROPIC_BASE_URL=http://nas-server.fritz.box:8000 \
 ANTHROPIC_AUTH_TOKEN=local \
 ANTHROPIC_MODEL=qwen3.8-27b \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=196608 \
 claude --settings '{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0","CLAUDE_CODE_ENABLE_TELEMETRY":"0"}}'
 ```
 
 Those two env vars are not cosmetic - Unsloth's docs flag ~90% slowdowns against local
 endpoints without them.
+
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` is new here. Claude Code does not recognize `qwen3.8-27b`, so it
+assumes a 200k window and sizes auto-compact against it - slightly *larger* than the server's actual
+196608. Set it, or auto-compact fires too late.
+
+> **Server-side prerequisite (added 2026-08-26).** Out of the box this does **not** work. The stock
+> Qwen3.8 template raises `System message must be at the beginning.` because Claude Code sends its
+> agent-type and skill listings as a `role: "system"` message after the first user turn - so `messages`
+> roles are `['user', 'system']`. Every request 500s, Claude Code retries 11 times, and the session ends
+> with no assistant message (the session title still generates, because that call carries no listings).
+> The endpoint itself is fine: streaming, tools, `cache_control`, `tool_choice`, `thinking` and
+> `count_tokens` all verified working. Fix is the one-line `--chat-template-file` patch in the README
+> ([The chat-template patch](../README.md#the-chat-template-patch)). Verified end to end after the patch:
+> the previously-failing 24k-token request returns HTTP 200 and `claude -p` answers normally.
 
 ### Changing reasoning effort on the fly
 

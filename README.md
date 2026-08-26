@@ -174,6 +174,7 @@ M=/garagedata/models/gguf
   --spec-draft-n-max 2 \
   --ubatch-size 512 \
   --cache-ram 512 \
+  --chat-template-file $M/Qwen3.8-27B-chat-template-patched.jinja \
   --mmproj $M/mmproj-Qwen3.8-27B-F16.gguf \
   --no-mmproj-offload
 ```
@@ -191,6 +192,7 @@ M=/garagedata/models/gguf
 | `--cache-ram 512` | **Defaults to 8192 MiB of host RAM.** On a low-RAM host that thrashes instantly. |
 | `--ubatch-size 512` | Keep >= 288 so image tokens fit in one physical batch. |
 | `--no-mmproj-offload` | Keeps the vision tower in host RAM, freeing VRAM for KV. Costs ~885 MB of RAM. |
+| `--chat-template-file` | One-line patch to the stock template so mid-conversation `system` messages do not 500. **Required for Claude Code.** See [The chat-template patch](#the-chat-template-patch). |
 
 ### VRAM budget
 
@@ -262,6 +264,62 @@ Both are also settable per request, which is how you vary effort prompt-to-promp
 > ([froggeric/Qwen-Fixed-Chat-Templates](https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates))
 > via `--chat-template-file`. Test tool-calling end to end before blaming the model.
 
+### The chat-template patch
+
+The stock Qwen3.8 template **hard-fails any `system` message that is not at the very start of the
+conversation**. It merges the leading system turns into `merged_system`, then raises on every later one:
+
+```jinja
+{%- for message in messages %}
+    {%- if loop.index0 >= num_sys %}
+    {%- set content = render_content(message.content, true)|trim %}
+    {%- if message.role == "system" or message.role == "developer" %}
+        {{- raise_exception('System message must be at the beginning.') }}
+```
+
+That is fine for chat UIs and it is fine for Qwen Code, but it makes **Claude Code unusable**: Claude Code
+sends its agent-type and skill listings as a `role: "system"` message *after* the first user turn, so every
+request comes back as
+
+```
+HTTP 500 {"error":{"code":500,"type":"server_error",
+ "message":"Jinja Exception: System message must be at the beginning."}}
+```
+
+Claude Code retries 11 times and then gives up with no assistant message at all. The endpoint is not at
+fault - streaming, tools, `cache_control`, `tool_choice`, `thinking` and `count_tokens` all work.
+
+**Fix.** Dump the template out of the running server, replace the `raise_exception` with an inline ChatML
+system turn, and point `--chat-template-file` at the result:
+
+```bash
+M=/garagedata/models/gguf
+curl -s localhost:8000/props | python3 -c \
+  "import sys,json; sys.stdout.write(json.load(sys.stdin)['chat_template'])" \
+  > $M/Qwen3.8-27B-chat-template-patched.jinja
+```
+
+Then in that file swap the raise for:
+
+```jinja
+    {%- if message.role == "system" or message.role == "developer" %}
+        {{- '<|im_start|>system\n' + content + '<|im_end|>' + '\n' }}
+```
+
+One line changed, nothing else. Mid-conversation system turns are structurally valid ChatML, so the model
+reads them as instructions exactly where they were placed. Verify the swap took:
+
+```bash
+# replay any request whose messages array has a non-leading system turn - expect HTTP 200, not 500
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8000/v1/messages \
+  -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"qwen3.8-27b","max_tokens":8,"system":"s",
+       "messages":[{"role":"user","content":"hi"},{"role":"system","content":"stray"}]}'
+```
+
+> Applied here on 2026-08-26 against build `b10577-2c6b141ef`. Re-derive the file after a model or
+> template update - it is a patch against *this* template, not a standalone one.
+
 ---
 
 ## Section 3: Running as a service (and swapping models)
@@ -294,6 +352,7 @@ ExecStart=/garagedata/build/llama.cpp/build/bin/llama-server \
   --ubatch-size 512 --cache-ram 512 \
   --min-p 0.0 \
   --chat-template-kwargs '{"reasoning_effort":"medium"}' \
+  --chat-template-file /garagedata/models/gguf/Qwen3.8-27B-chat-template-patched.jinja \
   --mmproj /garagedata/models/gguf/mmproj-Qwen3.8-27B-F16.gguf \
   --no-mmproj-offload
 

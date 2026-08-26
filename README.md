@@ -250,9 +250,21 @@ To disable thinking entirely there is a **separate** switch - `reasoning_effort`
 --chat-template-kwargs '{"enable_thinking":false}'
 ```
 
-Both are also settable per request, which is how you vary effort prompt-to-prompt without a restart.
-`llama-server` accepts `reasoning_effort` as a top-level field and maps it into the template, so
-`{"reasoning_effort":"low"}` and `{"chat_template_kwargs":{"reasoning_effort":"low"}}` are equivalent.
+Both are also settable per request, which is how you vary effort prompt-to-prompt without a restart -
+but **which field works depends on the endpoint**. On `/v1/chat/completions`, `llama-server` accepts
+`reasoning_effort` as a top-level field and maps it into the template, so `{"reasoning_effort":"low"}`
+and `{"chat_template_kwargs":{"reasoning_effort":"low"}}` are equivalent. On the Anthropic-format
+`/v1/messages`, top-level `reasoning_effort` is **silently dropped** - only `chat_template_kwargs`
+gets through. Measured on identical requests: 17 prompt tokens baseline and with top-level
+`reasoning_effort`, 43 with `chat_template_kwargs` low, 55 with xhigh.
+
+> Verifying this yourself: add `cache_read_input_tokens` to `input_tokens` before comparing. The
+> prefix cache makes an unchanged prompt look *smaller*, not equal, and it is easy to misread that
+> as the field having had an effect.
+
+This is why **Claude Code cannot control effort on this server** - it sends its effort as
+`output_config: {"effort": "high"}`, which `/v1/messages` ignores, so you always get the server
+default regardless of what its banner says. See the tuning notes for the full wire capture.
 
 > **Set `--min-p 0.0` explicitly.** The GGUF carries Qwen's `temp 1.0 / top_p 0.95 / top_k 20`, so
 > those apply even with no flags - but `min_p` is not in that metadata and falls back to llama.cpp's
@@ -543,6 +555,114 @@ git worktree add ../feature-ui feature/new-ui
 
 This restricts node_modules re-installation conflicts and stops isolated agents from breaking each
 other's environments/contexts accidentally!
+
+---
+
+## Section 8: Connecting [Claude Code](https://github.com/anthropics/claude-code)
+
+Claude Code speaks Anthropic's `/v1/messages`, which `llama-server` exposes natively - so it needs no
+gateway, only environment variables. Two things bite before it works, and three more are cosmetic
+but misleading.
+
+> **Prerequisite: the patched chat template.** Without it *every* request 500s with
+> `System message must be at the beginning.` - Claude Code sends its agent and skill listings as a
+> `role: "system"` message after the first user turn. See [The chat-template patch](#the-chat-template-patch).
+> This is not optional; nothing below works until the server runs the patched template.
+
+### Launching it
+
+```bash
+ANTHROPIC_BASE_URL=http://nas-server.fritz.box:8000 \
+ANTHROPIC_AUTH_TOKEN=local \
+ANTHROPIC_MODEL=qwen3.8-27b \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=196608 \
+claude --settings '{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0","CLAUDE_CODE_ENABLE_TELEMETRY":"0"}}'
+```
+
+| Variable | Why |
+| :--- | :--- |
+| `ANTHROPIC_BASE_URL` | Points Claude Code at llama-server instead of api.anthropic.com. |
+| `ANTHROPIC_AUTH_TOKEN` | Any non-empty string. The server has no auth unless you passed `--api-key`, but Claude Code refuses to start without a credential. |
+| `ANTHROPIC_MODEL` | Must match `--alias`. |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Claude Code does not recognize `qwen3.8-27b` and assumes a 200k window - *larger* than the real 196608, so auto-compact would fire too late. |
+| `CLAUDE_CODE_ATTRIBUTION_HEADER=0`, `CLAUDE_CODE_ENABLE_TELEMETRY=0` | Not cosmetic - Unsloth's docs flag ~90% slowdowns against local endpoints without them. |
+
+Worth putting in a wrapper so you do not retype it:
+
+```bash
+cat > ~/.local/bin/qwen-claude <<'EOF'
+#!/usr/bin/env bash
+export ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://nas-server.fritz.box:8000}
+export ANTHROPIC_AUTH_TOKEN=local
+export ANTHROPIC_MODEL=qwen3.8-27b
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=196608
+export CLAUDE_CODE_ATTRIBUTION_HEADER=0
+export CLAUDE_CODE_ENABLE_TELEMETRY=0
+exec claude "$@"
+EOF
+chmod +x ~/.local/bin/qwen-claude
+```
+
+### Reasoning effort: use the proxy
+
+Out of the box Claude Code has **no** effort control here. It sends its setting as Anthropic's
+`output_config: {"effort": ...}`, and `/v1/messages` ignores that field - so the model always runs at
+the server default no matter what the banner claims. (Top-level `reasoning_effort` does not help
+either; on `/v1/messages` only `chat_template_kwargs` gets through. See Section 2.)
+
+[`claude-code-effort-proxy.py`](claude-code-effort-proxy.py) in this repo does the one rewrite that
+fixes it - `output_config.effort` -> `chat_template_kwargs.reasoning_effort` - and streams SSE
+through untouched. Run it on the client machine; the server needs no further changes:
+
+```bash
+./claude-code-effort-proxy.py &                 # listens on 127.0.0.1:8899
+ANTHROPIC_BASE_URL=http://127.0.0.1:8899 qwen-claude
+```
+
+`/effort` inside Claude Code (or `"effortLevel"` in settings) then genuinely changes the generation.
+`low`, `medium` and `high` are verified end to end below. Claude Code offers further levels (`auto`,
+`ultracode`); whatever they emit, the proxy forwards it only if the template accepts it and otherwise
+drops it, so the worst case is the server default - never a 500.
+
+| Claude Code effort | reaches template as | prompt tokens |
+| :--- | :--- | ---: |
+| (proxy not running) | nothing - server default `medium` | 17 |
+| `low` | `low` | 43 |
+| `medium` | `medium` | 17 |
+| `high` | `high`, which the template aliases to `xhigh` | 55 |
+
+`medium` matching the baseline is correct, not a failure: the template only injects an instruction
+string for `low` and `xhigh`.
+
+| `claude-code-effort-proxy.py` env | Default | Purpose |
+| :--- | :--- | :--- |
+| `QWEN_UPSTREAM` | `http://nas-server.fritz.box:8000` | Upstream llama-server. |
+| `QWEN_PORT` / `QWEN_BIND` | `8899` / `127.0.0.1` | Where the proxy listens. |
+| `QWEN_FORCE` | unset | Pin one effort regardless of what Claude Code asks for. |
+| `QWEN_VERBOSE` | unset | Log each rewrite to stderr. |
+
+The proxy only touches `POST /v1/messages` bodies, and only when the effort is one the template
+accepts - an unrecognized value is dropped rather than forwarded, because the template raises on it.
+Everything else, including `/v1/messages/count_tokens`, passes through byte-for-byte.
+
+### What is misleading and cannot be fixed
+
+| Symptom | Reality |
+| :--- | :--- |
+| Banner says `... with high effort` | Claude Code's own `effortLevel` setting. Inert unless the proxy above is running. Set `"effortLevel": "medium"` in `~/.claude/settings.json` to make the banner honest. |
+| Banner says `API Usage Billing` | Auth-mode readout, triggered by `ANTHROPIC_AUTH_TOKEN` being set. Nothing is billed. No setting controls this label. |
+| `/cost` shows dollar amounts | **Fabricated.** Unrecognized models get a fallback rate and `hasUnknownModelCost: true` - one measured session reported $0.0102 for 743 in / 260 out tokens that cost nothing. Ignore `/cost`, the status-line cost, and cost telemetry. |
+| `[claude-code:unrecognized_model]` on startup | Expected. Harmless once `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is set. |
+| `claude.ai connectors are disabled` | Expected - a credential is set, so it does not load your account's connectors. |
+
+### Verifying the whole path
+
+```bash
+qwen-claude -p "Reply with exactly: OK"
+```
+
+Answers `OK` and exits 0 when the template patch and environment are both right; hangs through 11
+retries and exits empty when the template is unpatched.
 
 ---
 

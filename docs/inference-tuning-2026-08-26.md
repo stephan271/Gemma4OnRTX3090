@@ -228,18 +228,57 @@ assumes a 200k window and sizes auto-compact against it - slightly *larger* than
 
 | Client | On the fly? | How |
 | :--- | :---: | :--- |
-| curl / scripts | yes | `"reasoning_effort":"low"` top-level, or in `chat_template_kwargs` |
+| curl / scripts | yes | `chat_template_kwargs` always; top-level `"reasoning_effort":"low"` **only on `/v1/chat/completions`** |
 | llama.cpp WebUI | yes | raw-parameter box in settings |
 | OpenCode | per-agent | put `"reasoning_effort"` in the model's `options` passthrough; switching agent switches profile, but not mid-session |
 | Claude Code | no | see below |
 | Qwen Code | no | no passthrough field; server default only |
 
-**Claude Code's think-levels do not map through.** Tested by sending Anthropic's
-`thinking: {type: "enabled", budget_tokens: 1024}`: the server accepts it without error but
-ignores it - prompt length was identical to a request with no thinking block, whereas
-`reasoning_effort: "low"` visibly changed the prompt. So "think harder" in Claude Code never
-reaches `reasoning_effort`, and you get whatever the server default is. That is precisely why
-setting the server default to `medium` matters.
+**Claude Code's effort setting does not map through** - the status line lies about it.
+
+Claude Code 2.1.246 does not send `reasoning_effort`, and no longer sends a thinking budget
+either. Captured from the wire, `effortLevel` maps 1:1 onto Anthropic's `output_config`, while
+the thinking block is a fixed `adaptive`:
+
+| Claude Code `effortLevel` | what actually goes on the wire |
+| :--- | :--- |
+| `low` | `"output_config":{"effort":"low"}`, `"thinking":{"type":"adaptive"}` |
+| `medium` | `"output_config":{"effort":"medium"}`, `"thinking":{"type":"adaptive"}` |
+| `high` | `"output_config":{"effort":"high"}`, `"thinking":{"type":"adaptive"}` |
+
+`llama-server` drops `output_config` on the floor. Measured on `/v1/messages`, prompt tokens for
+an identical request (totals include `cache_read_input_tokens` - ignore that and the prefix cache
+will fool you into thinking the prompt shrank):
+
+| request | prompt tokens |
+| :--- | ---: |
+| baseline (server default `medium`) | 17 |
+| `+ "output_config":{"effort":"low"}` | 17 - **ignored** |
+| `+ "reasoning_effort":"low"` (top level) | 17 - **ignored** |
+| `+ "chat_template_kwargs":{"reasoning_effort":"low"}` | 43 |
+| `+ "chat_template_kwargs":{"reasoning_effort":"xhigh"}` | 55 |
+
+So on the Anthropic endpoint **`chat_template_kwargs` is the only per-request lever** - top-level
+`reasoning_effort` works on `/v1/chat/completions` (17 -> 43 there) but is dropped on
+`/v1/messages`. Claude Code sends neither.
+
+**Net effect:** the banner reads `qwen3.8-27b with high effort` because that is Claude Code's own
+`effortLevel` setting, but the model runs at the server default `medium` no matter what you set.
+Setting `"effortLevel": "medium"` in `~/.claude/settings.json` makes the banner honest; it changes
+nothing about the generation. That is precisely why setting the server default to `medium` matters.
+
+**Fixed 2026-08-26** by [`claude-code-effort-proxy.py`](../claude-code-effort-proxy.py), a client-side
+shim that rewrites `output_config.effort` into `chat_template_kwargs.reasoning_effort` on the way
+through (the template aliases `high` -> `xhigh` itself, so values pass straight through) and streams
+SSE untouched. With it running, prompt tokens track the setting: `low` 43, `medium` 17, `high` 55.
+Setup in [Section 8 of the README](../README.md#section-8-connecting-claude-code).
+
+**`API Usage Billing` in the banner is wrong too - nothing is billed.** That label is Claude Code's
+auth-mode readout, triggered by `ANTHROPIC_AUTH_TOKEN` being set; it does not know the endpoint is
+local. Worse, cost figures are *fabricated*: sessions against `qwen3.8-27b` record a `costUSD`
+computed from a fallback rate with `hasUnknownModelCost: true` (one measured session billed
+$0.0102 for 743 in / 260 out tokens that cost nothing). Ignore `/cost`, the status-line cost and
+any cost telemetry when pointed at this server.
 
 **Practical setup:** server default `medium` covers Claude Code, Qwen Code and OpenCode; drop
 to `low` per-agent in OpenCode for tool-heavy loops; use curl with `xhigh` for one genuinely
